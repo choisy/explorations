@@ -1,0 +1,155 @@
+---
+title: "Epidemiological Model Order Reduction"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Introduction
+
+* phenomenological vs mechanistic model
+* model order reduction vs surrogate models
+
+## An SIR model
+
+```{r}
+sir_equations <- function(time, variables, parameters) {
+  with(as.list(c(variables, parameters)), {
+    infection <- beta * I * S
+    recovery  <- gamma * I
+    dS <- -infection
+    dI <-  infection - recovery
+    dR <-  recovery
+    list(c(dS, dI, dR))
+  })
+}
+```
+
+## Some simulations from the SIR model
+
+```{r}
+library(deSolve)
+```
+
+```{r}
+initial_values <- c(S = 999, I = 1, R = 0)
+time_values <- seq(0, 15, .1)
+parameters_values <- c(beta = .004, gamma = .5)
+```
+
+```{r}
+simulations <- ode(y = initial_values, times = time_values,
+                   func = sir_equations, parms = parameters_values)
+```
+
+```{r}
+simulations <- as.data.frame(simulations)
+```
+
+
+## Fitting gamma and log-normal distribution
+
+### Direct maximum-likelihood estimation
+
+```{r}
+fit_gamma <- MASS::fitdistr(with(simulations, rep(time, round(I)))[-1], "gamma")
+fit_lnorm <- MASS::fitdistr(with(simulations, rep(time, round(I)))[-1], "lognormal")
+```
+
+```{r}
+lwd_par <- 2
+
+make_values <- function(f, x) {
+  f(time_values, x$estimate[1], x$estimate[2])
+}
+
+maxI <- max(simulations$I)
+
+add_lines <- function(x, ...) {
+  lines(time_values, maxI * x / max(x), lwd = lwd_par, ...)
+}
+
+dgamma_values <- make_values(dgamma, fit_gamma)
+dlnorm_values <- make_values(dlnorm, fit_lnorm)
+
+with(simulations, plot(time, I, type = "l",
+                       xlab = "time (day)", ylab = "prevalence", lwd = lwd_par))
+add_lines(dgamma_values, col = "red")
+add_lines(dlnorm_values, col = "blue")
+
+legend("topright", c("SIR", "log-normal", "gamma"),
+       col = c("black", "blue", "red"), lwd = lwd_par, bty = "n")
+```
+
+### Indirect maximum-likelihood estimation
+
+We first start we direct estimation, add one scale parameter to the distribution
+and continue the maximum-likelihood estimation process by considering a Poisson
+distribution of error.
+
+```{r}
+make_model <- function(f) {
+  function(x, y, z) {
+    z * f(time_values, x, y)
+  }
+}
+```
+
+```{r}
+gamma_model <- make_model(dgamma)
+lnorm_model <- make_model(dlnorm)
+```
+
+```{r}
+#prev_data <- round(simulations$I)[-1]
+prev_data <- simulations$I[-1]
+
+make_mLL <- function(model) {
+#  function(x, y, z) {- sum(dpois(prev_data, model(x, y, z)[-1], TRUE))}
+  function(x, y, z) {
+    tmp <- (prev_data - model(x, y, z)[-1])^2
+    tmp[tmp < 1e-10] <- 1e-10
+    sum(log(tmp))
+  }
+}
+```
+
+```{r}
+library(bbmle)
+```
+
+```{r}
+mle_gamma <- mle2(make_mLL(gamma_model), list(x = fit_gamma$estimate[1],
+                                              y = fit_gamma$estimate[2],
+                                              z = maxI / max(dgamma_values)))
+parameters <- coef(mle_gamma)
+#lines(time_values, gamma_model(parameters[1], parameters[2], parameters[3]))
+```
+
+```{r}
+mle_lnorm <- mle2(make_mLL(lnorm_model), list(x = fit_lnorm$estimate[1],
+                                              y = fit_lnorm$estimate[2],
+                                              z = maxI / max(dlnorm_values)))
+parameters <- coef(mle_lnorm)
+#lines(time_values, lnorm_model(parameters[1], parameters[2], parameters[3]))
+```
+
+Does not improve at all.
+
+### Moment-matching
+
+### Mean and mode matching
+
+### Peak matching
+
+Where we match both the mode and the corresponding density value.
+
+## Fitting other function to cumulative prevalence
+
+```{r}
+with(simulations, plot(time, cumsum(I), type = "l"))
+```
